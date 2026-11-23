@@ -26,24 +26,30 @@ Prospect AI is designed to:
 
 ## Architecture
 
+
 ```mermaid
 flowchart LR
-    C[Client] -->|POST /v1/chat/completions| G[FastAPI Gateway]
-    G -->|Normalize and hash payload| K[Cache Key]
-    K -->|O(1) lookup| L1[L1 Exact-Match Cache]
-    L1 -->|Hit| R[OpenAI-Compatible Response]
-    L1 -->|Miss| L2[L2 Semantic Cache]
-    L2 -->|Similarity hit| R
-    L2 -->|Miss| SF[Single-Flight Registry]
-    SF -->|One shared upstream operation| P[ProxyGateway]
-    P -->|Retries and async HTTP| U[Gemini API]
-    U -->|Successful response| S[Cache Storage]
-    S -->|Store exact and optional embedding| L1
-    S -->|Store semantic entry| L2
-    U -->|Success| R
-    U -->|Failure| E[HTTP 429, 502, 503, or 504]
+    C["Client"] -->|"POST chat completion"| G["FastAPI Gateway"]
+    G -->|"Normalize and hash payload"| K["Cache Key"]
+
+    K -->|"O(1) lookup"| L1["L1 Exact-Match Cache"]
+    L1 -->|"Hit"| R["OpenAI-Compatible Response"]
+    L1 -->|"Miss"| L2["L2 Semantic Cache"]
+
+    L2 -->|"Similarity hit"| R
+    L2 -->|"Miss"| SF["Single-Flight Registry"]
+
+    SF -->|"One shared upstream operation"| P["Proxy Gateway"]
+    P -->|"Retries and async HTTP"| U["Gemini API"]
+
+    U -->|"Successful response"| S["Cache Storage"]
+    S -->|"Store exact response"| L1
+    S -->|"Store semantic entry"| L2
+
+    U -->|"Failure"| E["HTTP Error"]
     E --> C
 ```
+
 
 The in-process flow uses SHA-256 payload normalization for L1 keys, an in-memory cache backend,
 and cosine-similarity search for L2 entries. Identical cache misses are grouped by the same
