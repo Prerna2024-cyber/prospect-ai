@@ -32,7 +32,7 @@ flowchart LR
     C["Client"] -->|"POST chat completion"| G["FastAPI Gateway"]
     G -->|"Normalize and hash payload"| K["Cache Key"]
 
-    K -->|"O(1) lookup"| L1["L1 Exact-Match Cache"]
+    K -->|lookup| L1["L1 Exact-Match Cache"]
     L1 -->|"Hit"| R["OpenAI-Compatible Response"]
     L1 -->|"Miss"| L2["L2 Semantic Cache"]
 
