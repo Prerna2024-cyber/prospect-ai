@@ -45,6 +45,11 @@ class MemoryCacheBackend(CacheStorageBackend):
             ]
 
         self._exact_cache[entry.request_hash] = entry
+        self._embedding_cache = [
+            (key, cached)
+            for key, cached in self._embedding_cache
+            if key != entry.request_hash
+        ]
         self._embedding_cache.append((entry.request_hash, entry))
 
     async def delete_by_hash(self, hash_key: str) -> bool:

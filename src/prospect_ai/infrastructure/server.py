@@ -6,14 +6,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from prospect_ai.core.normalizer import normalize_payload, payload_to_cache_key
 from prospect_ai.core.embedder import get_embedder
-from prospect_ai.infrastructure.proxy_gateway import ProxyGateway
-from prospect_ai.infrastructure.storage.base import CacheStorageBackend
-
-from prospect_ai.infrastructure.proxy_gateway import ProxyGateway
+from prospect_ai.core.normalizer import normalize_payload, payload_to_cache_key
+from prospect_ai.infrastructure.proxy_gateway import ProxyError, ProxyGateway
 from prospect_ai.infrastructure.storage.base import CacheStorageBackend
 
 logger = logging.getLogger(__name__)
@@ -99,11 +96,14 @@ class OpenAIGateway:
             if cached_entry:
                 logger.info(f"L1 cache hit: {cache_key[:8]}...")
                 if cached_entry.response_text and model:
-                    return self._format_response(
-                        cached_entry.response_text,
-                        model,
-                        cached_entry.tokens_used,
-                        "stop",
+                    return JSONResponse(
+                        content=self._format_response(
+                            cached_entry.response_text,
+                            model,
+                            cached_entry.tokens_used,
+                            "stop",
+                        ),
+                        headers={"X-Prospect-Cache": "l1"},
                     )
 
 
@@ -121,26 +121,41 @@ class OpenAIGateway:
                         f"(similarity={similarity_score:.4f})"
                     )
                     if cached_entry.response_text and model:
-                        return self._format_response(
-                            cached_entry.response_text,
-                            model,
-                            cached_entry.tokens_used,
-                            "stop",
+                        return JSONResponse(
+                            content=self._format_response(
+                                cached_entry.response_text,
+                                model,
+                                cached_entry.tokens_used,
+                                "stop",
+                            ),
+                            headers={"X-Prospect-Cache": "l2"},
                         )
             if stream:
+                # Streaming status is not exposed here because cache/upstream
+                # status becomes known over the stream lifecycle. Cache and
+                # upstream response headers cannot be determined safely before
+                # the stream starts.
                 return StreamingResponse(
                     self.proxy.stream_upstream(body, cache_key),
                     media_type="text/event-stream",
                 )
             else:
-                response_text, usage = await self.proxy.call_upstream(
-                    body, cache_key
-                )
-                return self._format_response(
-                    response_text,
-                    model,
-                    usage.get("completion_tokens", 0),
-                    "stop",
+                upstream_result = await self.proxy.call_upstream(body, cache_key)
+                if isinstance(upstream_result, ProxyError):
+                    raise HTTPException(
+                        status_code=upstream_result.status_code,
+                        detail=upstream_result.detail,
+                    )
+
+                response_text, usage = upstream_result
+                return JSONResponse(
+                    content=self._format_response(
+                        response_text,
+                        model,
+                        usage.get("completion_tokens", 0),
+                        "stop",
+                    ),
+                    headers={"X-Prospect-Cache": "miss"},
                 )
 
         @self.app.post("/v1/completions")
@@ -176,7 +191,6 @@ class OpenAIGateway:
         if "messages" not in body:
             return ValidationError(400, "Missing required field: messages")
         return None
-
     def _normalize_and_hash(
         self,
         model: str,
@@ -185,17 +199,16 @@ class OpenAIGateway:
         max_tokens: int | None,
     ) -> str | ValidationError:
         """Normalize payload and generate cache key."""
-        normalized = normalize_payload({
+        payload = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-        })
-        if not normalized:
+        }
+        if not normalize_payload(payload):
             return ValidationError(400, "Request normalization failed")
 
-        cache_key = payload_to_cache_key(normalized)
-        return cache_key
+        return payload_to_cache_key(payload)
 
     def _format_response(
         self,

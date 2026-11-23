@@ -149,10 +149,7 @@ async def test_e2e_empty_embedding():
         cache_backend=storage,
     )
 
-    proxy._enqueue_cache_store("cache_key", "response_text", {}, "")
-
-    import asyncio
-    await asyncio.sleep(0.1)
+    await proxy._store_cache("cache_key", "response_text", {}, "")
 
     cached = await storage.get_by_hash("cache_key")
     assert cached is not None

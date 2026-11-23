@@ -14,15 +14,13 @@ Then test:
 """
 
 import os
-import json
 import time
-from typing import Optional
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
+import openai
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-import openai
 
 # Configuration
 CRUCIBLE_BASE_URL = os.getenv("CRUCIBLE_BASE_URL", "http://localhost:8000/v1")
@@ -34,10 +32,12 @@ if not OPENAI_API_KEY:
 # Initialize OpenAI client pointing to Prospect proxy
 client = openai.OpenAI(base_url=CRUCIBLE_BASE_URL, api_key=OPENAI_API_KEY)
 
+
 # Cache metrics tracker
 @dataclass
 class CacheMetrics:
     """Track cache performance"""
+
     total_requests: int = 0
     cache_hits: int = 0
     l1_hits: int = 0
@@ -58,6 +58,7 @@ class CacheMetrics:
         total_latency = cache_latency + upstream_latency
         return total_latency / max(self.total_requests, 1)
 
+
 cache_metrics = CacheMetrics()
 
 # FastAPI app
@@ -67,27 +68,31 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
 # Request/Response models
 class Message(BaseModel):
     role: str = Field(..., description="'user' or 'assistant'")
     content: str = Field(..., description="Message content")
 
+
 class ChatRequest(BaseModel):
     model: str = Field(default="gpt-4", description="Model name")
     messages: list[Message] = Field(..., description="Conversation history")
     temperature: float = Field(default=0.7, description="Sampling temperature [0, 2]")
-    max_tokens: Optional[int] = Field(default=None, description="Max response tokens")
+    max_tokens: int | None = Field(default=None, description="Max response tokens")
+
 
 class ChatResponse(BaseModel):
     id: str = Field(..., description="Unique response ID")
     content: str = Field(..., description="Response message")
     tokens_used: int = Field(..., description="Tokens from this request")
     cached: bool = Field(..., description="Was response cached?")
-    cache_type: Optional[str] = Field(default=None, description="L1_EXACT or L2_SEMANTIC")
-    similarity_score: Optional[float] = Field(default=None, description="L2 match confidence [0, 1]")
+    cache_type: str | None = Field(default=None, description="L1_EXACT or L2_SEMANTIC")
+    similarity_score: float | None = Field(default=None, description="L2 match confidence [0, 1]")
     latency_ms: int = Field(..., description="Response latency in milliseconds")
     cost: float = Field(..., description="Estimated cost in USD")
-    savings: Optional[float] = Field(default=None, description="Cost saved if cached")
+    savings: float | None = Field(default=None, description="Cost saved if cached")
+
 
 class MetricsResponse(BaseModel):
     total_requests: int
@@ -99,12 +104,13 @@ class MetricsResponse(BaseModel):
     total_cost_saved: float
     average_cache_latency_ms: float
 
+
 # Routes
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """
     Chat endpoint with Prospect caching.
-    
+
     Forwards to OpenAI via Prospect proxy which:
     1. Tries L1 exact match cache (SHA-256 hash) → <1ms
     2. Tries L2 semantic cache (embedding similarity) → <15ms
@@ -163,6 +169,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             detail=f"LLM request failed: {str(e)}",
         )
 
+
 @app.get("/metrics", response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
     """Get cache performance metrics."""
@@ -177,10 +184,12 @@ async def get_metrics() -> MetricsResponse:
         average_cache_latency_ms=cache_metrics.average_cache_latency_ms,
     )
 
+
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint."""
     return {"status": "ok"}
+
 
 @app.get("/")
 async def root() -> dict:
@@ -196,15 +205,16 @@ async def root() -> dict:
         "cache_metrics": asdict(cache_metrics),
     }
 
+
 # Main
 if __name__ == "__main__":
     print("Starting LLM Chat Service...")
     print(f"✓ Using Prospect proxy: {CRUCIBLE_BASE_URL}")
-    print(f"✓ Chat endpoint: http://localhost:9000/chat")
-    print(f"✓ Metrics: http://localhost:9000/metrics")
+    print("✓ Chat endpoint: http://localhost:9000/chat")
+    print("✓ Metrics: http://localhost:9000/metrics")
     print()
     print("Make requests:")
-    print('  curl -X POST http://localhost:9000/chat \\')
+    print("  curl -X POST http://localhost:9000/chat \\")
     print('    -H "Content-Type: application/json" \\')
     print('    -d \'{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}\'')
     print()

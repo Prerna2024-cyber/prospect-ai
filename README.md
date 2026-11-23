@@ -1,653 +1,282 @@
-# Prospect AI: Semantic Cache & Reverse Proxy for LLM Inference
+# Prospect AI
 
-![Prospect AI](https://img.shields.io/badge/Prospect%20AI-Semantic%20Cache-brightgreen) ![License](https://img.shields.io/badge/License-MIT-blue) ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
+![Prospect AI](https://img.shields.io/badge/Prospect_AI-LLM_Gateway-brightgreen)
 
-**High-performance reverse proxy that intercepts, deduplicates, and caches semantically identical model queries—preventing wasted token compute and cutting latency to under 15ms.**
+![License](https://img.shields.io/badge/License-MIT-blue)
 
-## What is Prospect AI?
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 
-Prospect AI is an intelligent gateway (reverse proxy) between your LLM applications and upstream providers (OpenAI, Anthropic, etc.). It combines two-tier semantic caching (exact-match + embedding-based similarity) with smart fallback routing to reduce costs, improve latency, and ensure high availability.
+Prospect AI is an async LLM gateway built with FastAPI. It provides normalized exact-match caching,
+optional semantic caching, per-request-key single-flight deduplication, and an OpenAI-compatible
+`/v1/chat/completions` interface for an upstream provider such as Gemini.
 
-### Problem
+## Project Overview
 
-LLM inference is expensive and slow. Applications pay full token costs even for semantically duplicate queries (e.g., "How do I reset my password?" vs. "I forgot my password, how to reset?"). Standard key-value caches achieve <5% hit rates on natural language. Meanwhile, 429/5xx errors cause app crashes without fallback providers.
+The gateway receives chat-completion requests, normalizes and hashes their cache-relevant fields,
+and checks cache state before contacting the configured upstream provider. A cache miss is forwarded
+through an async HTTP proxy, while successful upstream responses are stored for later requests.
 
-## Quick Start
+Prospect AI is designed to:
 
-### Installation
-
-```bash
-# Via pip
-pip install prospect-ai
-
-# Via Docker
-docker run -p 8000:8000 \
-  -e OPENAI_API_KEY=sk-... \
-  ghcr.io/craftedwithintent/prospect-ai:latest
-
-# From source
-git clone https://github.com/CraftedWithIntent/prospect-ai.git
-cd prospect-ai
-pip install -e .
-```
-
-### Basic Usage
-
-#### 1. Start Prospect AI Proxy
-
-```bash
-prospect-ai start --port 8000 --similarity 0.92
-```
-
-#### 2. Replace OPENAI_BASE_URL in Your App
-
-**Before:**
-```python
-from openai import OpenAI
-
-client = OpenAI(api_key="sk-...", base_url="https://api.openai.com/v1")
-```
-
-**After:**
-```python
-from openai import OpenAI
-
-client = OpenAI(api_key="sk-...", base_url="http://localhost:8000/v1")
-```
-
-That's it. Cache hits are automatic.
-
-#### 3. Monitor Cache Performance
-
-```bash
-prospect-ai stats
-```
-
-Output:
-```
-Cache Statistics:
-  Total Requests: 1,248
-  Cache Hits: 742 (59.4%)
-  Avg Latency (Hit): 8.2ms
-  Avg Latency (Miss): 1,850ms
-  Cost Saved: $18.50
-```
-
----
-
-## Build Your First Cached LLM App
-
-Prospect AI shines as a drop-in reverse proxy for any LLM application. Here's a complete example:
-
-### Example: Chat Service with Semantic Caching
-
-A FastAPI service that uses Prospect to cache LLM responses:
-
-**1. Start Prospect proxy (Terminal 1)**
-
-```bash
-prospect-ai start --port 8000 --similarity 0.92
-```
-
-**2. Create chat service (`app.py`)**
-
-```python
-from fastapi import FastAPI
-from openai import OpenAI
-from pydantic import BaseModel
-import time
-
-app = FastAPI()
-
-# Point to Prospect proxy instead of OpenAI directly
-client = OpenAI(
-    base_url="http://localhost:8000/v1",
-    api_key="your-openai-api-key"
-)
-
-class Message(BaseModel):
-    content: str
-
-@app.post("/chat")
-def chat(message: Message):
-    """Chat endpoint that automatically benefits from Prospect caching."""
-    start = time.time()
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": message.content}],
-    )
-    latency = int((time.time() - start) * 1000)
-    
-    return {
-        "response": response.choices[0].message.content,
-        "latency_ms": latency,
-        "tokens_used": response.usage.completion_tokens,
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=9000)
-```
-
-**3. Run and test (Terminal 2)**
-
-```bash
-pip install fastapi uvicorn openai
-python app.py
-
-# In Terminal 3, test:
-curl -X POST http://localhost:9000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"content": "What is machine learning?"}'
-
-# First request: ~2 seconds (upstream to OpenAI)
-# {"response": "Machine learning is...", "latency_ms": 2150, "tokens_used": 125}
-
-# Similar follow-up: ~15ms (cache hit!)
-curl -X POST http://localhost:9000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Tell me about machine learning"}'
-
-# {"response": "Machine learning is...", "latency_ms": 12, "tokens_used": 0}
-```
-
-### Full Working Example
-
-A complete, production-ready example with metrics and tests is in **[examples/llm-chat-with-caching/](examples/llm-chat-with-caching/)**:
-
-- ✅ Full `app.py` with error handling and logging
-- ✅ Real-time cache metrics endpoint
-- ✅ Cost calculation and savings tracking
-- ✅ Comprehensive test suite (14 tests)
-- ✅ Docker + Kubernetes deployment
-- ✅ Detailed `README.md` with architecture and troubleshooting
-
-**Clone and run locally:**
-
-```bash
-cd examples/llm-chat-with-caching
-pip install -r requirements.txt
-export OPENAI_API_KEY="your-api-key-here"
-
-# Terminal 1: Start Prospect
-prospect-ai start --port 8000
-
-# Terminal 2: Start chat app
-python app.py
-
-# Terminal 3: Make requests
-curl -X POST http://localhost:9000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"content": "What is AI?"}'
-```
-
-See [examples/README.md](examples/README.md) for more examples and use cases.
-
----
-
-## Features
-
-### MVP (v1.0.0 Complete)
-
-- ✅ **OpenAI-Compatible Gateway** — Drop-in proxy for `/v1/chat/completions` (streaming & non-streaming)
-- ✅ **Hybrid Two-Tier Cache**:
-  - **L1 Exact Match**: Fast SHA-256 hash lookup (<1ms)
-  - **L2 Semantic Match**: Local embedding + cosine similarity (<15ms), configurable threshold (default 0.92)
-- ✅ **Smart Fallback Routing** — Automatic failover to secondary API keys or providers (429/5xx errors)
-- ✅ **Embedded Storage** — In-memory and SQLite-vec backends (zero external dependencies)
-- ✅ **Streaming SSE Support** — Fully supports `stream: true` with zero latency overhead
-- ✅ **CLI & Metrics** — Live dashboard with hit rates and latency insights
-- ✅ **Docker & PyPI** — Single command deployment
-- ✅ **Production Ready** — 50+ tests, 80%+ coverage, strict type checking, full documentation
-
-### Roadmap
-
-**Phase 2: Enhanced Features**
-- Distributed edge-proxy network support
-- Centralized semantic cache sharing across microservices
-- Smart invalidation hooks (tag-based, user-based, document-based)
-- PII scrubbing before caching (regex + NER)
-- Customer-managed encryption keys (CMEK)
-
-**Phase 3: Advanced Capabilities**
-- Multi-tenant rate limiting and budget guardrails
-- Audit logging and compliance reports
-- Private VPC deployments
-
----
+- reduce repeated upstream Gemini calls;
+- coalesce simultaneous identical non-streaming requests;
+- preserve OpenAI-compatible request and response shapes;
+- support exact and optional semantic cache lookup;
+- surface upstream failures as HTTP errors rather than empty successful responses.
 
 ## Architecture
 
-### Functional Core / Imperative Shell
-
-**Functional Core (Pure Logic):**
-- Request normalization (system prompt stripping, whitespace canonicalization)
-- Cosine similarity scoring & threshold evaluation
-- Model fallback routing decisions
-- Immutable types (CacheEntry, SimilarityScore, UpstreamRoute, CachedResponse)
-
-**Imperative Shell (I/O & Transport):**
-- FastAPI async HTTP server
-- Async httpx streaming gateway (SSE reconstruction)
-- Pluggable storage backends (in-memory, SQLite-vec, Redis, Qdrant)
-- Prometheus metrics & OpenTelemetry exporter
-
-### Request Flow
-
-```
-User App (OpenAI SDK)
-    ↓
-Prospect Proxy Server (FastAPI)
-    ├─→ 1. Normalize Request
-    │     └─→ Strip system prompt, canonicalize JSON
-    ├─→ 2. L1 Exact Match (SHA-256 hash)
-    │     └─→ Return cached response if found (< 1ms)
-    ├─→ 3. L2 Semantic Match (embedding + cosine similarity)
-    │     └─→ Return cached response if similarity >= 0.92 (< 15ms)
-    ├─→ 4. Cache Miss → Route to Upstream Provider
-    │     ├─→ OpenAI, Anthropic, Bedrock, Azure
-    │     └─→ Handle streaming (SSE chunks) + fallback on 429/5xx
-    ├─→ 5. Store Response in Cache
-    │     ├─→ Generate embedding (local ONNX model)
-    │     └─→ Persist to storage backend
-    ├─→ 6. Return to User App
-    │     └─→ Emit Prometheus metrics (hit_type, latency, tokens)
-    ↓
-User App receives response (cached or fresh)
+```mermaid
+flowchart LR
+    C[Client] -->|POST /v1/chat/completions| G[FastAPI Gateway]
+    G -->|Normalize and hash payload| K[Cache Key]
+    K -->|O(1) lookup| L1[L1 Exact-Match Cache]
+    L1 -->|Hit| R[OpenAI-Compatible Response]
+    L1 -->|Miss| L2[L2 Semantic Cache]
+    L2 -->|Similarity hit| R
+    L2 -->|Miss| SF[Single-Flight Registry]
+    SF -->|One shared upstream operation| P[ProxyGateway]
+    P -->|Retries and async HTTP| U[Gemini API]
+    U -->|Successful response| S[Cache Storage]
+    S -->|Store exact and optional embedding| L1
+    S -->|Store semantic entry| L2
+    U -->|Success| R
+    U -->|Failure| E[HTTP 429, 502, 503, or 504]
+    E --> C
 ```
 
-### Codebase Layout
+The in-process flow uses SHA-256 payload normalization for L1 keys, an in-memory cache backend,
+and cosine-similarity search for L2 entries. Identical cache misses are grouped by the same
+normalized key. Different cache keys remain independent.
 
-```
-prospect-ai/
-├── .github/workflows/
-│   ├── ci.yml                  # Test matrix (3.11/3.12), linting, build
-│   └── publish.yml             # PyPI + Docker release
-├── Dockerfile                  # Ultra-lightweight multi-stage image
-├── pyproject.toml              # Build config, CLI entrypoint
-├── README.md                   # This file
-├── LICENSE                     # MIT license
-├── CHANGELOG.md                # Release notes
-├── CONTRIBUTING.md             # Contribution guide
-├── SECURITY.md                 # Vulnerability reporting
-├── CODE_OF_CONDUCT.md          # Community standards
-├── docs/
-│   ├── DEPLOYMENT.md           # Production deployment guide
-│   └── adr/
-│       └── 001-architecture.md # Architecture decision record
-├── src/prospect_ai/
-│   ├── __init__.py             # Public API
-│   ├── cli.py                  # Typer CLI (`prospect-ai start`, `prospect-ai stats`)
-│   ├── domain/
-│   │   └── types.py            # Immutable domain models (CacheEntry, Route, etc.)
-│   ├── core/
-│   │   ├── similarity.py       # Cosine similarity + threshold scoring
-│   │   ├── normalizer.py       # Request normalization (exact match hashing)
-│   │   ├── embedder.py         # ONNX FastEmbed wrapper (M1.2)
-│   │   └── router.py           # Fallback routing logic
-│   └── infrastructure/
-│       ├── server.py           # FastAPI routes (/v1/chat/completions)
-│       ├── proxy_gateway.py    # Async HTTP + SSE streaming
-│       ├── storage/
-│       │   ├── base.py         # Abstract storage interface
-│       │   ├── memory.py       # In-memory backend
-│       │   └── sqlite_vec.py   # SQLite-vec backend
-│       └── telemetry.py        # Prometheus + OpenTelemetry
-└── tests/
-    ├── test_semantic_cache.py              # Foundation tests (20+)
-    ├── test_m1_2_integration.py            # Server L2 integration (12)
-    ├── test_m1_2_e2e.py                    # E2E proxy + cache (5)
-    ├── test_proxy_streaming.py             # SSE streaming (13)
-    ├── test_functional_core.py             # Similarity, normalization
-    └── test_benchmarks.py                  # Performance validation
-```
+## Core Features
 
----
+### L1 Exact-Match Caching
 
-## Configuration
+Requests are normalized and hashed with SHA-256 in `core/normalizer.py`. The memory backend performs
+O(1) exact lookup and stores successful upstream responses for later reuse.
 
-### prospect.yaml
+Successful non-streaming responses expose their cache source:
 
-```yaml
-# Prospect gateway configuration
+| Header value | Meaning |
+|---|---|
+| `X-Prospect-Cache: l1` | Exact-match cache hit |
+| `X-Prospect-Cache: l2` | Semantic cache hit |
+| `X-Prospect-Cache: miss` | Successful upstream response |
 
-server:
-  port: 8000
-  host: "0.0.0.0"
-  workers: 4
+Failed upstream responses do not include a cache-status header. Streaming responses do not expose
+the cache header because the cache or upstream status is not known safely when the stream begins.
+The OpenAI-compatible JSON body is unchanged.
 
-cache:
-  # Similarity threshold (0.0–1.0)
-  similarity_threshold: 0.92
-  
-  # Backend: memory, sqlite-vec, redis, qdrant
-  backend: "memory"
-  
-  # Max entries to store (for memory backend)
-  max_entries: 10000
-  
-  # Invalidation TTL (seconds, 0 = infinite)
-  ttl_seconds: 3600
+### L2 Semantic Caching
 
-upstream:
-  # Primary provider
-  provider: "openai"
-  api_key: "${OPENAI_API_KEY}"
-  
-  # Fallback providers (attempted in order)
-  fallback:
-    - provider: "anthropic"
-      api_key: "${ANTHROPIC_API_KEY}"
-    - provider: "azure"
-      api_key: "${AZURE_API_KEY}"
-  
-  # Request timeout
-  timeout_seconds: 30
-  
-  # Retry policy
-  max_retries: 3
+The L2 implementation generates embeddings with FastEmbed and searches cached vectors using cosine
+similarity. The default similarity threshold is `0.92`.
 
-telemetry:
-  # Metrics export: prometheus, opentelemetry
-  export: "prometheus"
-  
-  # Prometheus port
-  metrics_port: 9090
+Live embeddings are currently disabled when `fastembed` is unavailable or cannot be imported.
+In that case, L1 exact caching and request routing continue to operate; semantic cache lookup
+cannot produce live embeddings.
 
-logging:
-  level: "info"  # debug, info, warning, error
-```
+### Single-Flight Request Deduplication
 
----
+The proxy maintains an in-flight task registry keyed by normalized cache key. For identical
+concurrent non-streaming requests:
 
-## Usage Examples
+- only one upstream operation runs;
+- waiting callers receive the shared successful response or error;
+- cancelling one waiter does not cancel the shared operation;
+- inflight entries are removed after success or failure;
+- one cache key does not serialize another cache key.
 
-### Basic Cache Monitoring
+Streaming requests remain independent so one async SSE consumer cannot consume another client's
+stream.
+
+### Upstream Retries and Error Handling
+
+The gateway retries retryable upstream HTTP responses and handles 429 and 5xx responses. Terminal
+failures are returned as gateway HTTP errors:
+
+- `429` for exhausted upstream rate limiting;
+- `502` for connection failures or exhausted server errors;
+- `503` for upstream 503 responses;
+- `504` for upstream timeouts.
+
+Failed upstream results are never cached.
+
+## Technology Stack
+
+- Python 3.11+
+- FastAPI
+- Uvicorn
+- HTTPX
+- Pydantic
+- Typer
+- FastEmbed for optional local embeddings
+- Pytest and pytest-asyncio
+- Ruff
+- Hatchling
+
+## Setup and Configuration
+
+### Installation
+
+Clone and install the project from source:
 
 ```bash
-# Start proxy
-prospect-ai start --port 8000 --similarity 0.90
-
-# In another terminal, check stats
-prospect-ai stats
-
-# View cache entries
-prospect-ai cache list
-
-# Clear cache
-prospect-ai cache clear
+cd prospect-ai
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
 ```
 
-### Custom Similarity Threshold
+### Environment Variables
+
+The gateway reads:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `UPSTREAM_BASE_URL` | OpenAI-compatible upstream base URL | `https://api.openai.com/v1` |
+| `UPSTREAM_API_KEY` | Upstream provider credential | empty |
+
+For Gemini, set the Gemini OpenAI-compatible endpoint and your Gemini API key in the gateway
+process environment. Never place provider credentials in source code or command arguments that
+are captured by shell history.
 
 ```bash
-# Aggressive caching (more hits, lower precision)
-prospect-ai start --similarity 0.85
-
-# Conservative (fewer hits, higher precision)
-prospect-ai start --similarity 0.95
+export UPSTREAM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+export UPSTREAM_API_KEY="replace-with-your-gemini-api-key"
 ```
 
-### With Docker Compose
+Do not commit API keys or print them in benchmark output.
 
-```yaml
-version: '3.9'
-services:
-  prospect:
-    image: ghcr.io/craftedwithintent/prospect-ai:latest
-    ports:
-      - "8000:8000"
-    environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SIMILARITY_THRESHOLD: "0.92"
-  
-  app:
-    build: .
-    ports:
-      - "9000:9000"
-    environment:
-      OPENAI_BASE_URL: "http://prospect:8000/v1"
-    depends_on:
-      - prospect
-```
-
-Run:
-```bash
-docker-compose up
-```
-
----
-
-## CLI Reference
-
-```
-prospect-ai [OPTIONS] COMMAND
-
-Commands:
-  start       Start the Prospect proxy gateway
-  stats       Display cache performance metrics
-  cache       Cache management (list, clear, export)
-  config      Show or validate configuration
-  health      Check health status
-
-Options:
-  --version           Show version and exit
-  --help              Show this message and exit
-  --config FILE       Path to config file (default: prospect.yaml)
-
-Examples:
-  prospect-ai start --port 8000 --similarity 0.92
-  prospect-ai stats --format json
-  prospect-ai cache list --limit 100
-  prospect-ai config validate
-```
-
-### start
-
-```
-Usage: prospect-ai start [OPTIONS]
-
-Start the Prospect AI proxy gateway.
-
-Options:
-  --port PORT                        Listening port (default: 8000)
-  --host HOST                        Listening host (default: 0.0.0.0)
-  --similarity THRESHOLD             L2 similarity threshold (0.0-1.0, default: 0.92)
-  --workers WORKERS                  Worker threads (default: 4)
-  --backend BACKEND                  Cache backend: memory, sqlite-vec (default: memory)
-  --log-level LEVEL                  Logging level: debug, info, warning, error (default: info)
-  --help                             Show this message and exit
-```
-
-### stats
-
-```
-Usage: prospect-ai stats [OPTIONS]
-
-Display cache performance metrics.
-
-Options:
-  --format FORMAT                    Output format: text, json (default: text)
-  --help                             Show this message and exit
-```
-
----
-
-## Performance Benchmarks
-
-### Latency (P50/P99)
-
-| Scenario | P50 Latency | P99 Latency | Notes |
-|----------|------------|------------|-------|
-| L1 Exact Match (hash lookup) | 0.8ms | 1.2ms | In-memory hash table |
-| L2 Semantic Match (embedding + similarity) | 12ms | 18ms | ONNX model + cosine calc |
-| Cache Miss → Upstream | 1,200ms | 3,500ms | Upstream latency |
-| **Latency Improvement (Cache Hit)** | **99%** | **99%** | 1,200–3,500ms → <15ms |
-
-### Cache Hit Rate
-
-| Workload | Hit Rate | Tokens Saved | Cost Reduction |
-|----------|----------|--------------|----------------|
-| Conversational chatbot | 40–55% | 8–11x | 40–55% |
-| FAQ-based support | 60–75% | 15–20x | 60–75% |
-| Repeated queries | 80%+ | 20x+ | 80%+ |
-
----
-
-## Deployment
-
-### Local Development
+### Run the Gateway
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/ -v --cov=src/prospect_ai
-
-# Start proxy
-prospect-ai start --port 8000 --similarity 0.92
+python -m uvicorn run:app --host 127.0.0.1 --port 8000
 ```
 
-### Docker
+Verify the server:
 
 ```bash
-# Build locally
-docker build -t prospect-ai:latest .
-
-# Run with environment variables
-docker run -p 8000:8000 \
-  -e OPENAI_API_KEY=sk-... \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  prospect-ai:latest
+curl http://127.0.0.1:8000/health
 ```
 
-### Kubernetes
+The gateway process owns the upstream credential. Clients only send requests to Prospect AI.
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: prospect-proxy
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: prospect
-  template:
-    metadata:
-      labels:
-        app: prospect
-    spec:
-      containers:
-      - name: prospect
-        image: ghcr.io/craftedwithintent/prospect-ai:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: OPENAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: prospect-secrets
-              key: openai-api-key
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 10
-          periodSeconds: 30
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-```
+## API Usage
 
----
-
-## Testing
-
-### Run Test Suite Locally
+Send a non-streaming OpenAI-compatible request:
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=src/prospect_ai --cov-report=term-missing
-
-# Run only unit tests (fast)
-pytest tests/test_semantic_cache.py -v
-
-# Run specific test
-pytest tests/test_m1_2_integration.py::test_l2_lookup -v
+curl -i http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite",
+    "messages": [
+      {"role": "user", "content": "Explain what a database index is in two sentences."}
+    ],
+    "temperature": 0,
+    "stream": false
+  }'
 ```
 
-### Coverage Target
+Successful responses preserve the existing OpenAI-style JSON shape. The following is an
+illustrative response only: actual Gemini usage values and response content may differ.
 
-Minimum 80% (enforced by CI/CD)
+```json
+{
+  "object": "chat.completion",
+  "model": "gemini-3.5-flash-lite",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 0,
+    "total_tokens": 10
+  }
+}
+```
 
-### Add New Tests
+The response also includes `X-Prospect-Cache: miss`, `l1`, or `l2` where cache status is known.
 
-1. Create test file in `tests/test_*.py`
-2. Write test functions (pytest conventions)
-3. Ensure they pass: `pytest tests/test_*.py -v`
-4. Verify coverage increase: `--cov-report=term-missing`
-5. Update [CHANGELOG.md](CHANGELOG.md) with your test additions
-6. Commit with your changes
+## Benchmark
 
----
+`benchmark.py` checks gateway health, creates unique prompts, and sends each miss followed by the
+same exact payload as a potential L1 hit. A hit is counted only after HTTP 200 and
+`X-Prospect-Cache: l1` are confirmed.
 
-## Contributing
+Run the benchmark:
 
-This is an open-source project. Contributions welcome!
+```bash
+python benchmark.py
+```
 
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Install dev dependencies: `pip install -e ".[dev]"`
-4. Write tests for your changes
-5. Ensure all checks pass locally:
-   ```bash
-   ruff check src/ tests/
-   pyright src/ tests/
-   pytest tests/ --cov=src/prospect_ai
-   ```
-6. Update [CHANGELOG.md](CHANGELOG.md) with your changes
-7. Submit a PR with a clear description
+Custom iterations:
 
-### Code Style
+```bash
+python benchmark.py --iterations 50
+```
 
-- **Formatting:** Ruff (enforced)
-- **Type Checking:** Pyright strict mode (enforced)
-- **Testing:** Pytest with >80% coverage (enforced)
-- **PR Size:** Max 5 files per PR (encourages focused changes)
+### Verified Benchmark
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+The recorded benchmark attempted 20 iterations:
 
----
+- 17 successful miss-hit pairs;
+- 3 failed iterations:
+  - HTTP 503: 1 iteration
+  - HTTP 504: 2 iterations
+- Mean cache miss latency: `10.790745 seconds`;
+- Mean L1 cache hit latency: `0.002381 seconds`;
+- Mean latency reduction: `99.98%`.
+
+Miss latency includes upstream Gemini response time and any upstream retry behavior. The 17-pair
+benchmark result should not be interpreted as a general provider latency guarantee.
+
+For the exact upstream Gemini call count, inspect server logs during the benchmark for
+`Cached response` and `L1 cache hit` entries. Benchmark timing alone cannot prove the exact provider
+call count.
+
+## Testing and Code Quality
+
+Run the project test suite:
+
+```bash
+python -m pytest -q tests
+```
+
+Run Ruff across the repository:
+
+```bash
+python -m ruff check .
+```
+
+Verified state:
+
+- `76` tests passed.
+- `ruff check .` passed.
+
+## Limitations
+
+- The memory cache is process-local. Restarting the gateway loses all exact and semantic entries.
+- Live L2 embeddings require FastEmbed. When `fastembed` is unavailable, live semantic embeddings
+  are disabled and only exact caching and upstream behavior remain fully operational.
+- Cache-status headers are exposed for successful non-streaming L1, L2, and upstream-miss responses.
+  Streaming responses do not receive the header because cache status cannot be determined safely
+  before the stream starts.
+- The benchmark reports the gateway's complete HTTP latency, not only upstream provider time.
+- The router module contains request-routing logic, but the live gateway currently forwards a
+  request to the one upstream URL configured by `UPSTREAM_BASE_URL`.
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-**CraftedWithIntent™** — Built for precision. Built to scale.
-
----
-
-**No Shared Dependencies:** Prospect is completely decoupled from other CraftedWithIntent products. It works standalone as a semantic caching reverse proxy for any LLM API.
-
----
-
-## Questions? Support?
-
-- 📖 [Documentation](../../docs/)
-- 📋 [Deployment Guide](docs/DEPLOYMENT.md)
-- 🏗️ [Architecture Decision Record](docs/adr/001-architecture.md)
-- 🐛 [GitHub Issues](https://github.com/CraftedWithIntent/prospect-ai/issues)
-- 💬 [GitHub Discussions](https://github.com/CraftedWithIntent/prospect-ai/discussions)
-- 📧 [dev@crafted.ai](mailto:dev@crafted.ai)
+Copyright (c) 2026 Prerna.
