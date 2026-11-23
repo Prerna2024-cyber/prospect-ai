@@ -66,3 +66,6 @@ include = ["src"]
 exclude = ["**/__pycache__", "tests", ".venv"]
 typeCheckingMode = "standard"
 pythonVersion = "3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
